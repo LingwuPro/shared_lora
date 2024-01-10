@@ -265,8 +265,8 @@ class LlamaMLP(nn.Module):
         self.act_fn = ACT2FN[config.hidden_act]
 
     def forward(self, x):
-        gate_proj = (W_gate.weight + (A_gate.weight @ B_gate.weight))
-        up_proj = (W_up.weight + (A_up.weight @ B_up.weight))
+        gate_proj = (self.W_gate.weight + (self.A_gate.weight @ self.B_gate.weight))
+        up_proj = (self.W_up.weight + (self.A_up.weight @ self.B_up.weight))
         down_proj = (self.W_down.weight + (self.A_down.weight @ self.B_down.weight)) @ (self.act_fn(gate_proj(x)) * up_proj(x))
 
         return down_proj
@@ -865,7 +865,7 @@ class LlamaGroupbyLayer(nn.Module):
                     hidden_states,
                     attention_mask=attention_mask,
                     position_ids=position_ids,
-                    past_key_value=past_key_values,
+                    past_key_value=past_key_value,
                     output_attentions=output_attentions,
                     use_cache=use_cache,
                 )
