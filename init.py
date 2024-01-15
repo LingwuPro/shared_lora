@@ -21,13 +21,11 @@ class initialize:
         model:LlamaForCausalLM, 
         lora_model: redoLlmamaForCausalLM,
         config: LlamaConfig,
-        lora_size: int = 8,
-        lora_groupby: int = 8,
         ) -> None:
         
         self.model = model
-        self.lora_size = lora_size
-        self.lora_groupby = lora_groupby
+        self.lora_size = config.lora_size
+        self.lora_groupby = config.lora_groupby
         self.device = device
         self.config = config
         self.num_layers = config.num_hidden_layers
