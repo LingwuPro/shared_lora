@@ -50,6 +50,7 @@ from transformers.utils import (
 )
 from transformers.utils.import_utils import is_torch_fx_available
 from configuration_llama import LlamaConfig
+from utils import get_layer_pattern
 
 
 if is_flash_attn_2_available():
@@ -252,23 +253,31 @@ class LlamaMLP(nn.Module):
         self.W_up = W_up
         self.W_down = W_down
         
-        self.A_gate = nn.Linear(self.hidden_size, self.lora_size)
-        self.B_gate = nn.Linear(self.lora_size, self.intermediate_size)
-        self.A_up = nn.Linear(self.hidden_size, self.lora_size)
-        self.B_up = nn.Linear(self.lora_size, self.intermediate_size)
-        self.A_down = nn.Linear(self.intermediate_size, self.lora_size)
-        self.B_down = nn.Linear(self.lora_size, self.hidden_size)
+        self.B_gate = nn.Linear(self.hidden_size, self.lora_size)
+        # self.A_gate = nn.Linear(self.lora_size, self.hidden_size)
+        self.A_gate = nn.Linear(self.lora_size, self.intermediate_size)
+        # self.B_gate = nn.Linear(self.intermediate_size, self.lora_size)
+        self.B_up = nn.Linear(self.hidden_size, self.lora_size)
+        # self.A_up = nn.Linear(self.lora_size, self.hidden_size)
+        self.A_up = nn.Linear(self.lora_size, self.intermediate_size)
+        # self.B_up = nn.Linear(self.intermediate_size, self.lora_size)
+        self.B_down = nn.Linear(self.intermediate_size, self.lora_size)
+        # self.A_down = nn.Linear(self.lora_size, self.intermediate_size)
+        self.A_down = nn.Linear(self.lora_size, self.hidden_size)
+        # self.B_down = nn.Linear(self.hidden_size, self.lora_size)
         
-        # self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
-        # self.up_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
-        # self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
+        self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
+        self.up_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
+        self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
         self.act_fn = ACT2FN[config.hidden_act]
 
     def forward(self, x):
-        gate_proj = (self.W_gate.weight + (self.A_gate.weight @ self.B_gate.weight))
-        up_proj = (self.W_up.weight + (self.A_up.weight @ self.B_up.weight))
-        down_proj = (self.W_down.weight + (self.A_down.weight @ self.B_down.weight)) @ (self.act_fn(gate_proj(x)) * up_proj(x))
-
+        
+        with torch.no_grad():
+            self.gate_proj.weight.copy_(self.W_gate.weight + (self.A_gate.weight @ self.B_gate.weight))
+            self.up_proj.weight.copy_(self.W_up.weight + (self.A_up.weight @ self.B_up.weight))
+            self.down_proj.weight.copy_(self.W_down.weight + (self.A_down.weight @ self.B_down.weight))
+        down_proj = self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
         return down_proj
 
 
@@ -291,7 +300,8 @@ class LlamaAttention(nn.Module):
                  W_q:Linear, W_k:Linear, W_v:Linear, W_o:Linear):
         super().__init__()
         self.config = config
-        self.layer_idx = groupby_idx * config.lora_groupby + layer_idx
+        length = config.num_hidden_layers // config.lora_groupby
+        self.layer_idx = groupby_idx * length + layer_idx
         if layer_idx is None:
             logger.warning_once(
                 f"Instantiating {self.__class__.__name__} without passing `layer_idx` is not recommended and will "
@@ -320,19 +330,27 @@ class LlamaAttention(nn.Module):
         self.W_v = W_v
         self.W_o = W_o
         
-        self.A_q = nn.Linear(self.hidden_size, self.lora_size)
-        self.B_q = nn.Linear(self.lora_size, self.num_heads * self.head_dim)
-        self.A_k = nn.Linear(self.hidden_size, self.lora_size)
-        self.B_k = nn.Linear(self.lora_size, self.num_key_value_heads * self.head_dim)
-        self.A_v = nn.Linear(self.hidden_size, self.lora_size)
-        self.B_v = nn.Linear(self.lora_size, self.num_key_value_heads * self.head_dim)
-        self.A_o = nn.Linear(self.num_heads * self.head_dim, self.lora_size)
-        self.B_o = nn.Linear(self.lora_size, self.hidden_size)
+        self.B_q = nn.Linear(self.hidden_size, self.lora_size)
+        # self.A_q = nn.Linear(self.lora_size, self.hidden_size)
+        self.A_q = nn.Linear(self.lora_size, self.num_heads * self.head_dim)
+        # self.B_q = nn.Linear(self.num_heads * self.head_dim, self.lora_size)
+        self.B_k = nn.Linear(self.hidden_size, self.lora_size)
+        # self.A_k = nn.Linear(self.lora_size, self.hidden_size)
+        self.A_k = nn.Linear(self.lora_size, self.num_key_value_heads * self.head_dim)
+        # self.B_k = nn.Linear(self.num_key_value_heads * self.head_dim, self.lora_size)
+        self.B_v = nn.Linear(self.hidden_size, self.lora_size)
+        # self.A_v = nn.Linear(self.lora_size, self.hidden_size)
+        self.A_v = nn.Linear(self.lora_size, self.num_key_value_heads * self.head_dim)
+        # self.B_v = nn.Linear(self.num_key_value_heads * self.head_dim, self.lora_size)
+        self.B_o = nn.Linear(self.num_heads * self.head_dim, self.lora_size)
+        # self.A_o = nn.Linear(self.lora_size, self.num_heads * self.head_dim)
+        self.A_o = nn.Linear(self.lora_size, self.hidden_size)
+        # self.B_o = nn.Linear(self.hidden_size, self.lora_size)
         
-        # self.q_proj = nn.Linear(self.hidden_size, self.num_heads * self.head_dim, bias=config.attention_bias)
-        # self.k_proj = nn.Linear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=config.attention_bias)
-        # self.v_proj = nn.Linear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=config.attention_bias)
-        # self.o_proj = nn.Linear(self.num_heads * self.head_dim, self.hidden_size, bias=config.attention_bias)
+        self.q_proj = nn.Linear(self.hidden_size, self.num_heads * self.head_dim, bias=config.attention_bias)
+        self.k_proj = nn.Linear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=config.attention_bias)
+        self.v_proj = nn.Linear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=config.attention_bias)
+        self.o_proj = nn.Linear(self.num_heads * self.head_dim, self.hidden_size, bias=config.attention_bias)
         self._init_rope()
 
     def _init_rope(self):
@@ -379,13 +397,17 @@ class LlamaAttention(nn.Module):
             warnings.warn(
                 "Passing `padding_mask` is deprecated and will be removed in v4.37. Please make sure use `attention_mask` instead.`"
             )
-
         bsz, q_len, _ = hidden_states.size()
-
-        query_states = (self.W_q.weight + (self.A_q.weight @ self.B_q.weight)) @ hidden_states
-        key_states = (self.W_k.weight + (self.A_k.weight @ self.B_k.weight)) @ hidden_states
-        value_states = (self.W_v.weight + (self.A_v.weight @ self.B_v.weight)) @ hidden_states
-
+       
+        with torch.no_grad():
+            self.q_proj.weight.copy_(self.W_q.weight + (self.A_q.weight @ self.B_q.weight))
+            self.k_proj.weight.copy_(self.W_k.weight + (self.A_k.weight @ self.B_k.weight))
+            self.v_proj.weight.copy_(self.W_v.weight + (self.A_v.weight @ self.B_v.weight))
+            
+        query_states = self.q_proj(hidden_states)
+        key_states = self.k_proj(hidden_states)
+        value_states = self.v_proj(hidden_states)
+        
         query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
         key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
         value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
@@ -439,7 +461,9 @@ class LlamaAttention(nn.Module):
 
         attn_output = attn_output.reshape(bsz, q_len, self.hidden_size)
 
-        attn_output = (self.W_o.weight + (self.A_o.weight @ self.B_o.weight)) @ attn_output
+        with torch.no_grad():
+            self.o_proj.weight.copy_(self.W_o.weight + (self.A_o.weight @ self.B_o.weight))
+        attn_output = self.o_proj(attn_output)
 
         if not output_attentions:
             attn_weights = None
@@ -759,7 +783,7 @@ class LlamaDecoderLayer(nn.Module):
         super().__init__()
         self.hidden_size = config.hidden_size
 
-        self.self_attn = LLAMA_ATTENTION_CLASSES[config._attn_implementation](config=config,groupby_idx=groupby_idx, layer_idx=layer_idx, W_q=W_q, W_k = W_k,W_v=W_v,W_o=W_o)
+        self.self_attn = LlamaAttention(config=config,groupby_idx=groupby_idx, layer_idx=layer_idx, W_q=W_q, W_k = W_k,W_v=W_v,W_o=W_o)
 
         self.mlp = LlamaMLP(config, W_gate, W_up, W_down)
         self.input_layernorm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
@@ -1004,13 +1028,48 @@ class LlamaModel(LlamaPreTrainedModel):
         super().__init__(config)
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
+        self.use_attn_match = config.use_attn_match
+        self.attn_list = config.attn_list
+        self.num_heads = config.num_attention_heads
+        self.head_dim = config.hidden_size // self.num_heads
+        self.num_hidden_layers = config.num_hidden_layers
+        self.lora_groupby = config.lora_groupby
+        self.groupby_layer_size = config.num_hidden_layers // config.lora_groupby
 
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
-        self.layers = nn.ModuleList(
-            [LlamaGroupbyLayer(config, groupby_idx) for groupby_idx in range(config.lora_groupby)]
-        )
-        self._use_sdpa = config._attn_implementation == "sdpa"
-        self._use_flash_attention_2 = config._attn_implementation == "flash_attention_2"
+        if self.use_attn_match:
+            self.W_q = nn.ModuleList(
+                [nn.Linear(config.hidden_size, config.num_attention_heads * self.head_dim, bias=config.attention_bias) for _ in range(self.lora_groupby)]
+            )
+            self.W_k = nn.ModuleList(
+                [nn.Linear(config.hidden_size, config.num_key_value_heads * self.head_dim, bias=config.attention_bias) for _ in range(self.lora_groupby)]
+            )
+            self.W_v = nn.ModuleList(
+                [nn.Linear(config.hidden_size, config.num_key_value_heads * self.head_dim, bias=config.attention_bias) for _ in range(self.lora_groupby)]
+            )
+            self.W_o = nn.ModuleList(
+                [nn.Linear(config.num_attention_heads * self.head_dim, config.hidden_size, bias=config.attention_bias) for _ in range(self.lora_groupby)]
+            )
+            self.W_gate = nn.ModuleList(
+                [nn.Linear(config.hidden_size, config.intermediate_size, bias=False) for _ in range(self.lora_groupby)]
+            )
+            self.W_up = nn.ModuleList(
+                [nn.Linear(config.hidden_size, config.intermediate_size, bias=False) for _ in range(self.lora_groupby)]
+            )
+            self.W_down = nn.ModuleList(
+                [nn.Linear(config.intermediate_size, config.hidden_size, bias=False) for _ in range(self.lora_groupby)]
+            )
+            layer_list = []
+            for idx in self.num_hidden_layers:
+                layer_pattern = get_layer_pattern(idx, self.attn_list)
+                layer_list.append(LlamaDecoderLayer(config, 0, idx, self.W_q[layer_pattern], self.W_k[layer_pattern], self.W_v[layer_pattern], self.W_o[layer_pattern], self.W_gate[layer_pattern], self.W_up[layer_pattern]))
+            self.layers = nn.ModuleList(layer_list)
+        else:
+            self.layers = nn.ModuleList(
+                [LlamaGroupbyLayer(config, groupby_idx) for groupby_idx in range(config.lora_groupby)]
+            )
+        # self._use_sdpa = config._attn_implementation == "sdpa"
+        # self._use_flash_attention_2 = config._attn_implementation == "flash_attention_2"
         self.norm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
         self.gradient_checkpointing = False
@@ -1078,23 +1137,23 @@ class LlamaModel(LlamaPreTrainedModel):
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
 
-        if self._use_flash_attention_2:
-            # 2d mask is passed through the layers
-            attention_mask = attention_mask if (attention_mask is not None and 0 in attention_mask) else None
-        elif self._use_sdpa and not output_attentions:
-            # output_attentions=True can not be supported when using SDPA, and we fall back on
-            # the manual implementation that requires a 4D causal mask in all cases.
-            attention_mask = _prepare_4d_causal_attention_mask_for_sdpa(
-                attention_mask,
-                (batch_size, seq_length),
-                inputs_embeds,
-                past_key_values_length,
-            )
-        else:
+        # if self._use_flash_attention_2:
+        #     # 2d mask is passed through the layers
+        #     attention_mask = attention_mask if (attention_mask is not None and 0 in attention_mask) else None
+        # elif self._use_sdpa and not output_attentions:
+        #     # output_attentions=True can not be supported when using SDPA, and we fall back on
+        #     # the manual implementation that requires a 4D causal mask in all cases.
+        #     attention_mask = _prepare_4d_causal_attention_mask_for_sdpa(
+        #         attention_mask,
+        #         (batch_size, seq_length),
+        #         inputs_embeds,
+        #         past_key_values_length,
+        #     )
+        # else:
             # 4d mask is passed through the layers
-            attention_mask = _prepare_4d_causal_attention_mask(
-                attention_mask, (batch_size, seq_length), inputs_embeds, past_key_values_length
-            )
+        attention_mask = _prepare_4d_causal_attention_mask(
+            attention_mask, (batch_size, seq_length), inputs_embeds, past_key_values_length
+        )
 
         # embed positions
         hidden_states = inputs_embeds
