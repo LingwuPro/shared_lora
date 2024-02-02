@@ -1,5 +1,6 @@
-from transformers import LlamaForCausalLM, LlamaTokenizer, AutoTokenizer
+from transformers import LlamaTokenizer, AutoTokenizer
 # from loraLlama import LlamaForCausalLM as redoLlmamaForCausalLM
+from modeling_llama import LlamaForCausalLM
 from datasets import Dataset
 from transformers import DataCollator, GenerationConfig
 from torch.nn import Linear
@@ -15,6 +16,7 @@ from networkx import Graph
 from typing import Dict, List, Tuple, DefaultDict, Set
 from torch import Tensor
 import networkx as nx
+from tqdm import tqdm
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -132,25 +134,25 @@ def reshape_ffn_weight(attn_list: List[List[int]],
     for group in attn_list:
         aim_gate = torch.chunk(gate_layer_dict['model.layers.{i}'.format(i=group[0])], chunks=gate_shape[0], dim=0)
         aim_up = torch.chunk(up_layer_dict['model.layers.{i}'.format(i=group[0])], chunks=up_shape[0], dim=0)
-        aim_down = torch.chunk(down_layer_dict['model.layers.{i}'.format(i=group[0])], chunks=down_shape[1], dim=1).view(-1)
+        aim_down = torch.chunk(down_layer_dict['model.layers.{i}'.format(i=group[0])].T, chunks=down_shape[1], dim=0)
         for idx, layer in enumerate(group):
             if idx == 0:
                 continue
             G = nx.Graph() #reshape is 0, aim is 1
             reshape_gate = torch.chunk(gate_layer_dict['model.layers.{i}'.format(i=layer)], chunks=gate_shape[0], dim=0)
             reshape_up = torch.chunk(up_layer_dict['model.layers.{i}'.format(i=layer)], chunks=up_shape[0], dim=0)
-            reshape_down = torch.chunk(down_layer_dict['model.layers.{i}'.format(i=layer)], chunks=down_shape[1], dim=1).view(-1)
+            reshape_down = torch.chunk(down_layer_dict['model.layers.{i}'.format(i=layer)].T, chunks=down_shape[1], dim=0)
             G.add_nodes_from(range(gate_shape[0]), bipartite=0)
             G.add_nodes_from(range(gate_shape[0], gate_shape[0] * 2), bipartite=1)
-            for i in range(gate_shape[0]):
+            for i in tqdm(range(gate_shape[0]), desc='add edge: '):
                 for j in range(gate_shape[0]):
-                    G.add_edge(i, j+gate_shape[0], weight=aim_gate[j] * reshape_gate[i] + aim_up[j] * reshape_up[i] + aim_down[j] * reshape_down[i])
+                    G.add_edge(i, j+gate_shape[0], weight=torch.abs(torch.log10(aim_gate[j]) - torch.log10(reshape_gate[i])) + torch.abs(torch.log10(aim_up[j]) - torch.log10(reshape_up[i])) + torch.abs(torch.log10(aim_down[j]) - torch.log10(reshape_down[i])))
             matching = nx.max_weight_matching(G, maxcardinality=True)
             
             order_list = torch.tensor(std_matching(matching))
             gate_layer_dict['model.layers.{i}'.format(i=layer)] = gate_layer_dict['model.layers.{i}'.format(i=layer)][order_list]
             up_layer_dict['model.layers.{i}'.format(i=layer)] = up_layer_dict['model.layers.{i}'.format(i=layer)][order_list]
-            down_layer_dict['model.layers.{i}'.format(i=layer)] = down_layer_dict['model.layers.{i}'.format(i=layer)][order_list]
+            down_layer_dict['model.layers.{i}'.format(i=layer)] = down_layer_dict['model.layers.{i}'.format(i=layer)].t()[order_list].t()
     return gate_layer_dict, up_layer_dict, down_layer_dict
 
 def evaluate(
@@ -166,7 +168,7 @@ def evaluate(
     **kwargs,
 ):
     inputs = tokenizer(instruction, return_tensors="pt")
-    input_ids = inputs["input_ids"] #.to(device)
+    input_ids = inputs["input_ids"].to(device)
     generation_config = GenerationConfig(
         temperature=temperature,
         top_p=top_p,
@@ -188,9 +190,17 @@ def evaluate(
             input_ids=input_ids,
             generation_config=generation_config,
             return_dict_in_generate=True,
-            output_scores=True,
+            output_scores=False,
             max_new_tokens=max_new_tokens,
         )
     s = generation_output.sequences[0]
     output = tokenizer.decode(s)
-    return output.split(instruction)[1].strip()
+
+    return output
+
+# attn_list = [[0,1,2,3],[4,5,6,7],[8,9,10,11],[12,13,14,15],[16,17,18,19],[20,21,22,23],[24,25,26,27],[28,29,30,31]]
+# idx = 17
+# print(get_layer_pattern(idx, attn_list))
+# matrix1 = torch.tensor([[1, 2], [3, 4]])
+# matrix2 = torch.tensor([[5, 6], [7, 8]])
+# print(get_attn_edge_weight(matrix1, matrix2))
