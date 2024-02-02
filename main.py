@@ -15,6 +15,7 @@ from init import initialize
 from emtune import EM_finetune
 from utils import *
 from accelerate import init_empty_weights, load_checkpoint_and_dispatch
+from dataset_utils import evaluate as dataset_evaluate
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -25,7 +26,7 @@ def parse_args():
     parser.add_argument('--output_dir', type=str, default='./output')
     parser.add_argument('--dataset', type=str, default='./dataset/piqa')
     parser.add_argument('--lora_groupby', type=int, default=8)
-    parser.add_argument('--lora_size', type=int, default=8)
+    parser.add_argument('--lora_size', type=int, default=1024)
     parser.add_argument('--em_epoch', type=int, default=20)
     parser.add_argument('--use_attn_match', type=bool, default=False)
     parser.add_argument('--use_ffn_match', type=bool, default=False)
@@ -53,9 +54,15 @@ def prepare_model():
     
     if args.work_part == 'initial':
         model = AutoModelForCausalLM.from_pretrained(args.model_name_or_path)
+        lora_model.load_state_dict(model.state_dict(), strict=False)
+        print("real model: ", model.model.norm.weight)
+        print("lora model: ", lora_model.model.norm.weight)
         initialize(model, lora_model,config).init()
-        lora_model.save_pretrained(args.output_dir+'/init_model')
-        torch.save(lora_model.state_dict(), args.output_dir+'/init_model')
+        # lora_model.save_pretrained(args.output_dir+'/init_model')
+        torch.save(lora_model.state_dict(), args.output_dir+f'/init_state_{args.lora_groupby}_{args.lora_size}')
+        lora_model = lora_model.to(device)
+        instruction = ["hello,world("]
+        print(evaluate(lora_model, tonkenizer, instruction))
         
     elif args.work_part == 'train':
         model = redoLlmamaForCausalLM.from_pretrained(args.output_dir+'/init_model')
@@ -70,9 +77,11 @@ def prepare_model():
         # model = load_checkpoint_and_dispatch(
         #     model, args.output_dir+'/init_model', device_map="auto"
         # )
-        model = redoLlmamaForCausalLM.from_pretrained(args.output_dir+'/init_model')
-        instruction = "hello,world("
-        print(evaluate(model, tonkenizer, instruction))
+        model = redoLlmamaForCausalLM(config)
+        model.load_state_dict(torch.load(args.output_dir+'/init_state_8_1024'),strict=False)
+        model = model.to(device)
+        dataset_evaluate(model, tonkenizer, 'piqa', device)
+        
     
 if __name__ == '__main__':
     prepare_model()
