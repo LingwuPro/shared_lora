@@ -75,9 +75,10 @@ class initialize:
             config.attn_list = self.attn_list
         else:
             group_size = self.num_layers // self.lora_groupby
+            self.attn_list = []
             for idx in range(self.lora_groupby):
                 temp_list = [str(i) for i in range(idx * group_size, (idx + 1) * group_size)]
-                self.attn_list.append(','.join(temp_list))
+                self.attn_list.append(temp_list)
             config.attn_list = self.attn_list
             for group in range(self.lora_groupby):
                 for layer in range(group_size):
@@ -89,6 +90,7 @@ class initialize:
                     
         
         if config.use_ffn_match == True:
+            print(self.attn_list)
             self.gate_layer_dict, self.up_layer_dict, self.down_layer_dict = reshape_ffn_weight(self.attn_list, self.gate_layer_dict, self.up_layer_dict, self.down_layer_dict)
             
  
