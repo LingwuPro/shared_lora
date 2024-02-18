@@ -17,6 +17,8 @@ from typing import Dict, List, Tuple, DefaultDict, Set
 from torch import Tensor
 import networkx as nx
 from tqdm import tqdm
+import faiss
+import numpy as np
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -130,29 +132,34 @@ def reshape_ffn_weight(attn_list: List[List[int]],
     up_shape = up_layer_dict['model.layers.0'].shape
     down_shape = down_layer_dict['model.layers.0'].shape
     assert gate_shape[0] == up_shape[0] == down_shape[1]
-    
-    for group in attn_list:
-        aim_gate = torch.chunk(gate_layer_dict['model.layers.{i}'.format(i=group[0])], chunks=gate_shape[0], dim=0)
-        aim_up = torch.chunk(up_layer_dict['model.layers.{i}'.format(i=group[0])], chunks=up_shape[0], dim=0)
-        aim_down = torch.chunk(down_layer_dict['model.layers.{i}'.format(i=group[0])].T, chunks=down_shape[1], dim=0)
-        for idx, layer in enumerate(group):
-            if idx == 0:
-                continue
-            G = nx.Graph() #reshape is 0, aim is 1
-            reshape_gate = torch.chunk(gate_layer_dict['model.layers.{i}'.format(i=layer)], chunks=gate_shape[0], dim=0)
-            reshape_up = torch.chunk(up_layer_dict['model.layers.{i}'.format(i=layer)], chunks=up_shape[0], dim=0)
-            reshape_down = torch.chunk(down_layer_dict['model.layers.{i}'.format(i=layer)].T, chunks=down_shape[1], dim=0)
-            G.add_nodes_from(range(gate_shape[0]), bipartite=0)
-            G.add_nodes_from(range(gate_shape[0], gate_shape[0] * 2), bipartite=1)
-            for i in tqdm(range(gate_shape[0]), desc='add edge: '):
-                for j in range(gate_shape[0]):
-                    G.add_edge(i, j+gate_shape[0], weight=torch.abs(torch.log10(aim_gate[j]) - torch.log10(reshape_gate[i])) + torch.abs(torch.log10(aim_up[j]) - torch.log10(reshape_up[i])) + torch.abs(torch.log10(aim_down[j]) - torch.log10(reshape_down[i])))
-            matching = nx.max_weight_matching(G, maxcardinality=True)
-            
-            order_list = torch.tensor(std_matching(matching))
-            gate_layer_dict['model.layers.{i}'.format(i=layer)] = gate_layer_dict['model.layers.{i}'.format(i=layer)][order_list]
-            up_layer_dict['model.layers.{i}'.format(i=layer)] = up_layer_dict['model.layers.{i}'.format(i=layer)][order_list]
-            down_layer_dict['model.layers.{i}'.format(i=layer)] = down_layer_dict['model.layers.{i}'.format(i=layer)].t()[order_list].t()
+    with torch.no_grad():    
+        for group in attn_list:
+            for idx, layer in tqdm(enumerate(group),desc="group: "):
+                if idx == 0:
+                    continue
+                
+                aim_gate = gate_layer_dict['model.layers.{i}'.format(i=group[0])]
+                aim_up = up_layer_dict['model.layers.{i}'.format(i=group[0])]
+                aim_down = down_layer_dict['model.layers.{i}'.format(i=group[0])].T
+                aim = torch.cat([aim_gate, aim_up, aim_down], dim = 1)
+                index = faiss.IndexIDMap(faiss.IndexFlatL2(gate_shape[1]*3))
+                index.add_with_ids(aim.numpy(), np.arange(len(aim)))
+                    
+                reshape_gate = gate_layer_dict['model.layers.{i}'.format(i=layer)]
+                reshape_up = up_layer_dict['model.layers.{i}'.format(i=layer)]
+                reshape_down = down_layer_dict['model.layers.{i}'.format(i=layer)].T
+                reshape = torch.cat([reshape_gate, reshape_up, reshape_down], dim=1)
+                order_list = []
+                for i in tqdm(range(gate_shape[0]), desc=f'layer{idx}_get_match : '):
+                    distances, indices = index.search(reshape[i:i+1, :].numpy(), 1)  
+                    order_list.append(indices[0][0])
+                    index.remove_ids(np.array([indices[0][0]]))
+                # print(order_list)                
+                order_list = torch.tensor(order_list)
+                gate_layer_dict['model.layers.{i}'.format(i=layer)] = gate_layer_dict['model.layers.{i}'.format(i=layer)][order_list]
+                up_layer_dict['model.layers.{i}'.format(i=layer)] = up_layer_dict['model.layers.{i}'.format(i=layer)][order_list]
+                down_layer_dict['model.layers.{i}'.format(i=layer)] = down_layer_dict['model.layers.{i}'.format(i=layer)][:, order_list]
+                print(down_layer_dict['model.layers.{i}'.format(i=layer)].shape)
     return gate_layer_dict, up_layer_dict, down_layer_dict
 
 def evaluate(
