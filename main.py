@@ -1,5 +1,6 @@
-from transformers import LlamaForCausalLM, LlamaTokenizer, AutoTokenizer, AutoModelForCausalLM, LlamaConfig
+from transformers import LlamaTokenizer, AutoTokenizer, AutoModelForCausalLM, LlamaConfig
 from loraLlama import LlamaForCausalLM as redoLlmamaForCausalLM
+from modeling_llama import LlamaForCausalLM
 from datasets import Dataset
 from transformers import DataCollator
 from torch.nn import Linear
@@ -25,11 +26,11 @@ def parse_args():
     parser.add_argument('--model_name_or_path', type=str, default='./../Llama-2-7b-hf')
     parser.add_argument('--output_dir', type=str, default='./output')
     parser.add_argument('--dataset', type=str, default='./dataset/piqa')
-    parser.add_argument('--lora_groupby', type=int, default=8)
-    parser.add_argument('--lora_size', type=int, default=1024)
+    parser.add_argument('--lora_groupby', type=int, default=1)
+    parser.add_argument('--lora_size', type=int, default=4096)
     parser.add_argument('--em_epoch', type=int, default=20)
     parser.add_argument('--use_attn_match', type=bool, default=False)
-    parser.add_argument('--use_ffn_match', type=bool, default=False)
+    parser.add_argument('--use_ffn_match', type=bool, default=True)
     parser.add_argument('--signal_train_epoch', type=int, default=3)
     parser.add_argument('--work_part', type=str, default='run', choices=['initial', 'train', 'run'])
     return parser.parse_args()
@@ -55,11 +56,9 @@ def prepare_model():
     if args.work_part == 'initial':
         model = AutoModelForCausalLM.from_pretrained(args.model_name_or_path)
         lora_model.load_state_dict(model.state_dict(), strict=False)
-        print("real model: ", model.model.norm.weight)
-        print("lora model: ", lora_model.model.norm.weight)
         initialize(model, lora_model,config).init()
         # lora_model.save_pretrained(args.output_dir+'/init_model')
-        torch.save(lora_model.state_dict(), args.output_dir+f'/init_state_{args.lora_groupby}_{args.lora_size}')
+        torch.save(lora_model.state_dict(), args.output_dir+f'/init_state_{args.lora_size}_{config.lora_groupby}_{args.use_attn_match}_{args.use_ffn_match}')
         lora_model = lora_model.to(device)
         instruction = ["hello,world("]
         print(evaluate(lora_model, tonkenizer, instruction))
@@ -77,10 +76,13 @@ def prepare_model():
         # model = load_checkpoint_and_dispatch(
         #     model, args.output_dir+'/init_model', device_map="auto"
         # )
-        model = redoLlmamaForCausalLM(config)
-        model.load_state_dict(torch.load(args.output_dir+'/init_state_8_1024'),strict=False)
-        model = model.to(device)
-        dataset_evaluate(model, tonkenizer, 'piqa', device)
+        # model = redoLlmamaForCausalLM(config)
+        # model.load_state_dict(torch.load(args.output_dir+f'/init_state_4096_1_False_True'),strict=False)
+        # model = model.to(device)
+        model = LlamaForCausalLM.from_pretrained(args.model_name_or_path)
+        instruction = ["hello,world("]
+        print(evaluate(model, tonkenizer, instruction))
+        # dataset_evaluate(model, tonkenizer, 'piqa', device)
         
     
 if __name__ == '__main__':
